@@ -1,0 +1,19 @@
+{
+  "name": "@nexus/signals",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "render": "revideo render src/projects/trade-signal.ts"
+  },
+  "dependencies": {
+    "@revideo/2d": "workspace:*",
+    "@revideo/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@revideo/vite-plugin": "workspace:*",
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0"
+  }
+}
