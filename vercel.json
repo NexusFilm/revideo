@@ -1,9 +1,10 @@
 {
   "version": 2,
   "framework": null,
-  "buildCommand": "npm install --prefix packages/nexus-signals && npm run build --prefix packages/nexus-signals",
+  "buildCommand": "npm install --prefix packages/nexus-signals && npm run build --prefix packages/nexus-signals && mkdir -p packages/nexus-signals/dist/auth/callback && cp packages/ui/auth/callback/index.html packages/nexus-signals/dist/auth/callback/index.html",
   "outputDirectory": "packages/nexus-signals/dist",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/auth/callback", "destination": "/auth/callback/index.html" },
+    { "source": "/((?!auth).*)", "destination": "/index.html" }
   ]
 }
