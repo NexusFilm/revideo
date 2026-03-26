@@ -1,27 +1,60 @@
-
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
 interface Props { session: Session; }
 
-interface Message {
-  id: number;
-  role: 'user' | 'assistant';
-  content: string;
-  ts: Date;
-}
+// ─── Types ─────────────────────────────────────────────────────────────────────
+interface AiMessage { id: number; role: 'user' | 'assistant'; content: string; ts: Date; }
+interface Layer { id: string; name: string; type: 'rect' | 'text' | 'circle' | 'image' | 'video'; visible: boolean; locked: boolean; color: string; }
+interface ProjectSettings { width: number; height: number; fps: number; duration: number; bg: string; }
 
-const SYSTEM_PROMPT = `You are the Nexia Motion AI assistant — a creative director and motion design expert for the Nexia Motion video creation studio.
+const TEMPLATES: Record<string, { name: string; emoji: string; settings: ProjectSettings; layers: Layer[] }> = {
+  'trade-signal': {
+    name: 'Trade Signal Alert', emoji: '📈',
+    settings: { width: 1920, height: 1080, fps: 60, duration: 10, bg: '#0a0a14' },
+    layers: [
+      { id: '1', name: 'Background Gradient', type: 'rect', visible: true, locked: false, color: '#7c3aed' },
+      { id: '2', name: 'Nexus Logo', type: 'image', visible: true, locked: false, color: '#f0b429' },
+      { id: '3', name: 'Signal Title', type: 'text', visible: true, locked: false, color: '#ffffff' },
+      { id: '4', name: 'Coin Symbol', type: 'text', visible: true, locked: false, color: '#00d4a0' },
+      { id: '5', name: 'Price Bar', type: 'rect', visible: true, locked: false, color: '#00d4a0' },
+      { id: '6', name: 'Action Badge', type: 'rect', visible: true, locked: false, color: '#f0b429' },
+    ],
+  },
+  'brand-intro': {
+    name: 'Brand Intro', emoji: '✨',
+    settings: { width: 1920, height: 1080, fps: 60, duration: 5, bg: '#07080a' },
+    layers: [
+      { id: '1', name: 'Background', type: 'rect', visible: true, locked: false, color: '#0a0014' },
+      { id: '2', name: 'Logo Ring', type: 'circle', visible: true, locked: false, color: '#7c3aed' },
+      { id: '3', name: 'Brand Name', type: 'text', visible: true, locked: false, color: '#ffffff' },
+      { id: '4', name: 'Tagline', type: 'text', visible: true, locked: false, color: '#a78bfa' },
+    ],
+  },
+  'social-clip': {
+    name: 'Social Clip', emoji: '📱',
+    settings: { width: 1080, height: 1920, fps: 30, duration: 15, bg: '#000000' },
+    layers: [
+      { id: '1', name: 'Background', type: 'rect', visible: true, locked: false, color: '#111' },
+      { id: '2', name: 'Hook Text', type: 'text', visible: true, locked: false, color: '#ffffff' },
+      { id: '3', name: 'Chart Visual', type: 'rect', visible: true, locked: false, color: '#00d4a0' },
+      { id: '4', name: 'CTA Button', type: 'rect', visible: true, locked: false, color: '#7c3aed' },
+    ],
+  },
+  'youtube-thumb': {
+    name: 'YouTube Thumbnail', emoji: '🎬',
+    settings: { width: 1280, height: 720, fps: 1, duration: 1, bg: '#0d0d1a' },
+    layers: [
+      { id: '1', name: 'BG Gradient', type: 'rect', visible: true, locked: false, color: '#1a0033' },
+      { id: '2', name: 'Main Image', type: 'image', visible: true, locked: false, color: '#555' },
+      { id: '3', name: 'Title Text', type: 'text', visible: true, locked: false, color: '#ffffff' },
+      { id: '4', name: 'Accent Bar', type: 'rect', visible: true, locked: false, color: '#f0b429' },
+    ],
+  },
+};
 
-Your job is to help users create, edit, and enhance motion graphics videos. You can:
-- Help design trade signal videos, brand intros, social clips, and YouTube content
-- Suggest animations, color palettes, typography, and timing
-- Write scripts and copy for video content
-- Guide users through the Revideo animation system
-- Help with Nexus Investment Group trade signal video creation
-
-Be concise, creative, and actionable. Keep responses focused on video/motion design and content creation within this studio. If asked about trading signals specifically, reference the Nexus Investment Group trade signal template.`;
+const ANIM_COLORS = ['#7c3aed','#a78bfa','#00d4a0','#f0b429','#4dabf7','#ff4560','#7c3aed','#a78bfa'];
 
 export default function Dashboard({ session }: Props) {
   const user = session.user;
@@ -29,349 +62,459 @@ export default function Dashboard({ session }: Props) {
   const avatar = user.user_metadata?.avatar_url as string | undefined;
   const firstName = name.split(' ')[0];
 
-  const [tab, setTab] = useState<'chat' | 'projects' | 'templates'>('chat');
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 0,
-      role: 'assistant',
-      content: `Hey ${firstName}! I'm your Nexia Motion AI assistant. I can help you create trade signal videos, brand intros, social clips, and more.\n\nWhat would you like to build today?`,
-      ts: new Date(),
-    }
-  ]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Studio state
+  const [activeTemplate, setActiveTemplate] = useState('trade-signal');
+  const [settings, setSettings] = useState<ProjectSettings>(TEMPLATES['trade-signal'].settings);
+  const [layers, setLayers] = useState<Layer[]>(TEMPLATES['trade-signal'].layers);
+  const [selectedLayer, setSelectedLayer] = useState<string | null>(null);
+  const [playhead, setPlayhead] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [leftTab, setLeftTab] = useState<'project' | 'elements' | 'animations'>('project');
+  const [rightOpen, setRightOpen] = useState(true);
 
+  // AI state
+  const [messages, setMessages] = useState<AiMessage[]>([{
+    id: 0, role: 'assistant', ts: new Date(),
+    content: `Hey ${firstName}! I'm your Nexia Motion AI. Select a template or describe what you want to create.`,
+  }]);
+  const [input, setInput] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const playRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  // Playhead animation
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (playing) {
+      playRef.current = setInterval(() => {
+        setPlayhead(t => {
+          if (t >= settings.duration) { setPlaying(false); return 0; }
+          return t + 0.1;
+        });
+      }, 100);
+    } else {
+      if (playRef.current) clearInterval(playRef.current);
+    }
+    return () => { if (playRef.current) clearInterval(playRef.current); };
+  }, [playing, settings.duration]);
+
+  const loadTemplate = (key: string) => {
+    const t = TEMPLATES[key];
+    if (!t) return;
+    setActiveTemplate(key);
+    setSettings(t.settings);
+    setLayers(t.layers);
+    setSelectedLayer(null);
+    setPlayhead(0);
+    setPlaying(false);
+    setMessages(prev => [...prev, {
+      id: Date.now(), role: 'assistant', ts: new Date(),
+      content: `Loaded "${t.name}" template. ${t.layers.length} layers ready. What changes would you like to make?`,
+    }]);
+  };
 
   const sendMessage = async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || aiLoading) return;
     setInput('');
-    const userMsg: Message = { id: Date.now(), role: 'user', content: text, ts: new Date() };
+    const userMsg: AiMessage = { id: Date.now(), role: 'user', content: text, ts: new Date() };
     setMessages(prev => [...prev, userMsg]);
-    setLoading(true);
+    setAiLoading(true);
 
     try {
-      // Build messages array for OpenAI
-      const history = [...messages, userMsg].map(m => ({
-        role: m.role,
-        content: m.content,
-      }));
-
+      const history = [...messages, userMsg].map(m => ({ role: m.role, content: m.content }));
+      const systemCtx = `Current project: ${TEMPLATES[activeTemplate]?.name || activeTemplate}, ${settings.width}x${settings.height}, ${settings.duration}s. Layers: ${layers.map(l => l.name).join(', ')}.`;
+      
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}` },
         body: JSON.stringify({
           model: 'gpt-4o-mini',
-          messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
-          max_tokens: 600,
-          temperature: 0.7,
+          messages: [
+            { role: 'system', content: `You are the Nexia Motion AI creative director. Help users design motion graphics videos for Nexus Investment Group. Be concise and actionable (under 120 words). Current project context: ${systemCtx}` },
+            ...history,
+          ],
+          max_tokens: 400, temperature: 0.7,
         }),
       });
-
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
       const data = await res.json();
-      const reply = data.choices?.[0]?.message?.content || 'Sorry, I had trouble with that. Try again.';
+      const reply = data.choices?.[0]?.message?.content || 'Try again.';
       setMessages(prev => [...prev, { id: Date.now() + 1, role: 'assistant', content: reply, ts: new Date() }]);
-    } catch (err) {
-      setMessages(prev => [...prev, {
-        id: Date.now() + 1, role: 'assistant',
-        content: "I'm having trouble connecting right now. Check your API key in Vercel env vars (VITE_OPENAI_API_KEY) and redeploy.",
-        ts: new Date(),
-      }]);
+    } catch {
+      setMessages(prev => [...prev, { id: Date.now() + 1, role: 'assistant', content: "Connection error. Please try again.", ts: new Date() }]);
     } finally {
-      setLoading(false);
+      setAiLoading(false);
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   };
 
-  const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-  };
+  const toggleLayer = (id: string) => setLayers(ls => ls.map(l => l.id === id ? { ...l, visible: !l.visible } : l));
+  const lockLayer = (id: string) => setLayers(ls => ls.map(l => l.id === id ? { ...l, locked: !l.locked } : l));
 
-  const clearChat = () => {
-    setMessages([{
-      id: Date.now(), role: 'assistant',
-      content: `New conversation started. What would you like to create, ${firstName}?`,
-      ts: new Date(),
-    }]);
+  const timelinePct = settings.duration > 0 ? (playhead / settings.duration) * 100 : 0;
+
+  const C = {
+    bg: '#0a0b0f', sidebar: '#0e0f15', panel: '#12141c', border: '#1e2030',
+    text: '#e0e0e8', muted: '#4a4a5a', accent: '#7c3aed', gold: '#f0b429',
+    green: '#00d4a0', surface: '#181a24', hover: '#1e2030',
   };
 
   return (
-    <div style={s.root}>
-      {/* ── Nav ── */}
-      <nav style={s.nav}>
-        <div style={s.navLeft}>
-          <button style={s.menuBtn} onClick={() => setSidebarOpen(o => !o)}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
-            </svg>
-          </button>
-          <div style={s.brand}>
-            <svg width="26" height="26" viewBox="0 0 36 36" fill="none">
-              <circle cx="18" cy="18" r="18" fill="#7c3aed" opacity="0.2"/>
-              <path d="M10 13l6 10 6-10" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M14 13h8" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round"/>
-            </svg>
-            <span style={s.brandName}>Nexia Motion</span>
-          </div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: C.bg, fontFamily: "'Inter', system-ui, sans-serif", color: C.text, overflow: 'hidden' }}>
+
+      {/* ── Top Nav ── */}
+      <nav style={{ display: 'flex', alignItems: 'center', height: '44px', borderBottom: `1px solid ${C.border}`, background: C.sidebar, padding: '0 12px', gap: '8px', flexShrink: 0, zIndex: 10 }}>
+        {/* Logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginRight: '16px' }}>
+          <svg width="22" height="22" viewBox="0 0 36 36" fill="none">
+            <circle cx="18" cy="18" r="18" fill="#7c3aed" opacity="0.2"/>
+            <path d="M10 13l6 10 6-10" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M14 13h8" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round"/>
+          </svg>
+          <span style={{ fontWeight: 700, fontSize: '14px', color: '#fff' }}>Nexia Motion</span>
         </div>
-        <div style={s.navTabs}>
-          {(['chat','projects','templates'] as const).map(t => (
-            <button key={t} style={{...s.navTab, ...(tab===t ? s.navTabActive : {})}} onClick={() => setTab(t)}>
-              {t.charAt(0).toUpperCase() + t.slice(1)}
+
+        {/* Template picker */}
+        <div style={{ display: 'flex', gap: '4px' }}>
+          {Object.entries(TEMPLATES).map(([key, t]) => (
+            <button key={key} onClick={() => loadTemplate(key)}
+              style={{ padding: '4px 10px', borderRadius: '6px', border: 'none', fontSize: '12px', cursor: 'pointer', fontWeight: activeTemplate === key ? 600 : 400,
+                background: activeTemplate === key ? C.accent : 'transparent', color: activeTemplate === key ? '#fff' : C.muted, transition: 'all 0.15s' }}>
+              {t.emoji} {t.name}
             </button>
           ))}
         </div>
-        <div style={s.navRight}>
-          {avatar && <img src={avatar} alt="" style={s.avatar}/>}
-          <span style={s.userName}>{name}</span>
-          <button style={{...s.signOutBtn, opacity: signingOut ? 0.5 : 1}}
-            onClick={() => { setSigningOut(true); supabase.auth.signOut(); }} disabled={signingOut}>
-            Sign out
+
+        <div style={{ flex: 1 }} />
+
+        {/* User + export */}
+        <button style={{ padding: '5px 14px', borderRadius: '6px', border: 'none', background: C.gold, color: '#000', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>
+          ↑ Export
+        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {avatar && <img src={avatar} alt="" style={{ width: 24, height: 24, borderRadius: '50%' }} />}
+          <span style={{ fontSize: '12px', color: C.muted }}>{firstName}</span>
+          <button onClick={() => { setSigningOut(true); supabase.auth.signOut(); }}
+            style={{ padding: '4px 8px', borderRadius: '6px', border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: '11px', cursor: 'pointer' }}>
+            {signingOut ? '...' : 'Sign out'}
           </button>
         </div>
       </nav>
 
-      {/* ── Body ── */}
-      <div style={s.body}>
-        {/* Sidebar */}
-        {sidebarOpen && (
-          <aside style={s.sidebar}>
-            <div style={s.sidebarSection}>
-              <div style={s.sidebarLabel}>QUICK ACTIONS</div>
-              {QUICK_ACTIONS.map(a => (
-                <button key={a.label} style={s.quickBtn} onClick={() => { setInput(a.prompt); setTab('chat'); setTimeout(() => inputRef.current?.focus(), 50); }}>
-                  <span style={s.quickEmoji}>{a.emoji}</span>
-                  <span style={s.quickLabel}>{a.label}</span>
+      {/* ── Main Body ── */}
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+        {/* ── Left Panel ── */}
+        <aside style={{ width: '220px', borderRight: `1px solid ${C.border}`, background: C.sidebar, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
+          {/* Tab switcher */}
+          <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}` }}>
+            {(['project', 'elements', 'animations'] as const).map(tab => (
+              <button key={tab} onClick={() => setLeftTab(tab)}
+                style={{ flex: 1, padding: '8px 4px', border: 'none', background: 'transparent', fontSize: '10px', fontWeight: 600, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.05em',
+                  color: leftTab === tab ? C.accent : C.muted, borderBottom: leftTab === tab ? `2px solid ${C.accent}` : '2px solid transparent', transition: 'all 0.15s' }}>
+                {tab}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px' }}>
+            {/* Project Settings */}
+            {leftTab === 'project' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Project Settings</div>
+                {[
+                  { label: 'Width', key: 'width', unit: 'px' },
+                  { label: 'Height', key: 'height', unit: 'px' },
+                  { label: 'FPS', key: 'fps', unit: '' },
+                  { label: 'Duration', key: 'duration', unit: 's' },
+                ].map(({ label, key, unit }) => (
+                  <div key={key}>
+                    <div style={{ fontSize: '10px', color: C.muted, marginBottom: '4px' }}>{label}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', background: C.surface, border: `1px solid ${C.border}`, borderRadius: '6px', overflow: 'hidden' }}>
+                      <input type="number" value={(settings as any)[key]}
+                        onChange={e => setSettings(s => ({ ...s, [key]: parseFloat(e.target.value) || 0 }))}
+                        style={{ flex: 1, background: 'transparent', border: 'none', color: C.text, fontSize: '12px', padding: '6px 8px', outline: 'none' }} />
+                      {unit && <span style={{ fontSize: '10px', color: C.muted, paddingRight: '8px' }}>{unit}</span>}
+                    </div>
+                  </div>
+                ))}
+                <div>
+                  <div style={{ fontSize: '10px', color: C.muted, marginBottom: '4px' }}>Background Color</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: C.surface, border: `1px solid ${C.border}`, borderRadius: '6px', padding: '6px 8px' }}>
+                    <div style={{ width: 16, height: 16, borderRadius: '3px', background: settings.bg, border: `1px solid ${C.border}` }} />
+                    <input value={settings.bg} onChange={e => setSettings(s => ({ ...s, bg: e.target.value }))}
+                      style={{ flex: 1, background: 'transparent', border: 'none', color: C.text, fontSize: '12px', outline: 'none' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Elements / Layers */}
+            {leftTab === 'elements' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '8px' }}>Elements</div>
+                {layers.map((layer, i) => (
+                  <div key={layer.id} onClick={() => setSelectedLayer(layer.id === selectedLayer ? null : layer.id)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px', borderRadius: '6px', cursor: 'pointer', border: `1px solid ${layer.id === selectedLayer ? C.accent : 'transparent'}`,
+                      background: layer.id === selectedLayer ? `${C.accent}15` : 'transparent', opacity: layer.visible ? 1 : 0.4, transition: 'all 0.1s' }}>
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: layer.color, flexShrink: 0 }} />
+                    <span style={{ flex: 1, fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{layer.name}</span>
+                    <button onClick={e => { e.stopPropagation(); toggleLayer(layer.id); }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: '11px', padding: '0 2px' }}>
+                      {layer.visible ? '●' : '○'}
+                    </button>
+                    <button onClick={e => { e.stopPropagation(); lockLayer(layer.id); }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: layer.locked ? C.gold : C.muted, fontSize: '11px', padding: '0 2px' }}>
+                      {layer.locked ? '🔒' : '🔓'}
+                    </button>
+                  </div>
+                ))}
+                <button onClick={() => {
+                  const newLayer: Layer = { id: String(Date.now()), name: 'New Layer', type: 'rect', visible: true, locked: false, color: C.accent };
+                  setLayers(ls => [newLayer, ...ls]);
+                }} style={{ marginTop: '8px', padding: '6px', borderRadius: '6px', border: `1px dashed ${C.border}`, background: 'transparent', color: C.muted, fontSize: '12px', cursor: 'pointer' }}>
+                  + Add Layer
+                </button>
+              </div>
+            )}
+
+            {/* Animations */}
+            {leftTab === 'animations' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '8px' }}>Animations</div>
+                {layers.map((layer, i) => (
+                  <div key={layer.id} style={{ marginBottom: '8px' }}>
+                    <div style={{ fontSize: '11px', color: C.muted, marginBottom: '4px' }}>{layer.name}</div>
+                    {['Parallel', 'Wait'].map((anim, j) => (
+                      <div key={j} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', background: C.surface, borderRadius: '4px', marginBottom: '2px', border: `1px solid ${C.border}` }}>
+                        <div style={{ width: 6, height: 6, borderRadius: '1px', background: ANIM_COLORS[(i + j) % ANIM_COLORS.length] }} />
+                        <span style={{ fontSize: '11px', color: C.muted }}>{anim}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </aside>
+
+        {/* ── Center: Canvas + Timeline ── */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: C.bg }}>
+
+          {/* Canvas area */}
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative', background: '#06070a' }}>
+
+            {/* Toolbar */}
+            <div style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', display: 'flex', flexDirection: 'column', gap: '4px', background: C.panel, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '6px' }}>
+              {[
+                { icon: '%', title: 'Scale' },
+                { icon: '✓', title: 'Select' },
+                { icon: '□', title: 'Rectangle' },
+                { icon: '○', title: 'Circle' },
+                { icon: 'T', title: 'Text' },
+                { icon: '⊞', title: 'Image' },
+              ].map(({ icon, title }) => (
+                <button key={title} title={title}
+                  style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '5px', border: 'none', background: 'transparent', color: C.muted, fontSize: '13px', cursor: 'pointer' }}>
+                  {icon}
                 </button>
               ))}
             </div>
-            <div style={s.sidebarSection}>
-              <div style={s.sidebarLabel}>TEMPLATES</div>
-              {TEMPLATES.map(t => (
-                <button key={t.name} style={s.quickBtn} onClick={() => { setInput(`Create a ${t.name} video for me`); setTab('chat'); setTimeout(() => inputRef.current?.focus(), 50); }}>
-                  <span style={s.quickEmoji}>{t.emoji}</span>
-                  <span style={s.quickLabel}>{t.name}</span>
+
+            {/* Preview canvas */}
+            <div style={{
+              background: settings.bg,
+              width: Math.min(800, (800 / settings.width) * settings.width),
+              height: Math.min(450, (800 / settings.width) * settings.height),
+              borderRadius: '4px',
+              boxShadow: '0 0 0 1px rgba(255,255,255,0.05), 0 20px 60px rgba(0,0,0,0.8)',
+              position: 'relative',
+              overflow: 'hidden',
+            }}>
+              {/* Render visible layers as preview */}
+              {layers.filter(l => l.visible).map((layer, i) => {
+                const scale = 800 / settings.width;
+                const positions = [
+                  { top: '10%', left: '5%', width: '90%', height: '80%' },
+                  { top: '5%', left: '40%', width: '20%', height: '20%' },
+                  { top: '30%', left: '10%', width: '40%', height: '15%' },
+                  { top: '50%', left: '10%', width: '30%', height: '8%' },
+                  { top: '65%', left: '10%', width: '50%', height: '6%' },
+                  { top: '75%', left: '10%', width: '20%', height: '10%' },
+                ];
+                const pos = positions[i % positions.length];
+                return (
+                  <div key={layer.id} onClick={() => setSelectedLayer(layer.id)}
+                    style={{
+                      position: 'absolute', ...pos,
+                      background: layer.type === 'rect' ? `${layer.color}30` : 'transparent',
+                      border: `1px solid ${layer.id === selectedLayer ? layer.color : layer.color + '40'}`,
+                      borderRadius: layer.type === 'circle' ? '50%' : '3px',
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      color: layer.color, fontSize: '11px', fontWeight: 600,
+                      transition: 'border-color 0.15s',
+                    }}>
+                    {layer.type === 'text' && <span style={{ color: layer.color, opacity: 0.8, fontSize: '10px' }}>{layer.name}</span>}
+                  </div>
+                );
+              })}
+              {/* Playhead indicator */}
+              <div style={{ position: 'absolute', bottom: 0, left: 0, width: `${timelinePct}%`, height: '2px', background: C.accent, transition: 'width 0.1s linear' }} />
+            </div>
+
+            {/* Timestamp */}
+            <div style={{ position: 'absolute', right: '12px', bottom: '12px', fontSize: '11px', color: C.muted, background: C.panel, border: `1px solid ${C.border}`, borderRadius: '4px', padding: '3px 8px' }}>
+              t = {playhead.toFixed(2)}s
+            </div>
+
+            {/* Zoom */}
+            <div style={{ position: 'absolute', top: '10px', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '8px', background: C.panel, border: `1px solid ${C.border}`, borderRadius: '6px', padding: '4px 10px', fontSize: '12px', color: C.muted }}>
+              <span>—</span>
+              <span>{Math.round((800 / settings.width) * 100)}%</span>
+              <span>+</span>
+              <span style={{ margin: '0 4px', color: C.border }}>|</span>
+              <span>⊞</span>
+            </div>
+          </div>
+
+          {/* ── Timeline ── */}
+          <div style={{ height: '140px', borderTop: `1px solid ${C.border}`, background: C.sidebar, flexShrink: 0, overflow: 'hidden' }}>
+            {/* Timeline toolbar */}
+            <div style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', borderBottom: `1px solid ${C.border}`, gap: '8px' }}>
+              <button onClick={() => { setPlayhead(0); setPlaying(false); }}
+                style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: '14px', padding: '2px 4px' }}>⏮</button>
+              <button onClick={() => setPlaying(p => !p)}
+                style={{ background: C.accent, border: 'none', color: '#fff', cursor: 'pointer', borderRadius: '50%', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
+                {playing ? '⏸' : '▶'}
+              </button>
+              <button onClick={() => { setPlayhead(settings.duration); setPlaying(false); }}
+                style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: '14px', padding: '2px 4px' }}>⏭</button>
+              <span style={{ fontSize: '11px', color: C.muted, marginLeft: '8px' }}>
+                {playhead.toFixed(1)}s / {settings.duration}s
+              </span>
+              <span style={{ fontSize: '11px', color: C.muted }}>{settings.fps} fps</span>
+            </div>
+
+            {/* Timeline tracks */}
+            <div style={{ overflowX: 'auto', overflowY: 'hidden', padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              {/* Time ruler */}
+              <div style={{ display: 'flex', marginLeft: '80px', marginBottom: '2px' }}>
+                {Array.from({ length: Math.floor(settings.duration) + 1 }, (_, i) => (
+                  <div key={i} style={{ width: '60px', fontSize: '9px', color: C.muted, borderLeft: `1px solid ${C.border}`, paddingLeft: '3px', flexShrink: 0 }}>{i}s</div>
+                ))}
+              </div>
+              {/* Layer tracks */}
+              {layers.slice(0, 4).map((layer, i) => (
+                <div key={layer.id} style={{ display: 'flex', alignItems: 'center', height: '18px' }}>
+                  <div style={{ width: '80px', fontSize: '10px', color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 }}>{layer.name}</div>
+                  <div style={{ position: 'relative', display: 'flex', gap: '2px' }}>
+                    {/* Animated blocks */}
+                    {Array.from({ length: Math.floor(settings.duration / 2) + 1 }, (_, j) => (
+                      <div key={j} style={{
+                        width: `${50 + Math.random() * 30}px`,
+                        height: '14px', borderRadius: '3px', border: `1px solid ${ANIM_COLORS[(i + j) % ANIM_COLORS.length]}60`,
+                        background: `${ANIM_COLORS[(i + j) % ANIM_COLORS.length]}20`,
+                        display: 'flex', alignItems: 'center', paddingLeft: '4px', flexShrink: 0,
+                      }}>
+                        <span style={{ fontSize: '8px', color: ANIM_COLORS[(i + j) % ANIM_COLORS.length], opacity: 0.8 }}>
+                          {j % 2 === 0 ? 'Parallel' : 'Wait'}
+                        </span>
+                      </div>
+                    ))}
+                    {/* Playhead line */}
+                    <div style={{
+                      position: 'absolute', top: 0, left: `${timelinePct * 3}px`, width: '1px', height: '100%',
+                      background: C.accent, zIndex: 2, transition: 'left 0.1s linear',
+                    }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Right: AI Panel ── */}
+        {rightOpen && (
+          <aside style={{ width: '280px', borderLeft: `1px solid ${C.border}`, background: C.sidebar, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+            <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 700 }}>AI Assistant</div>
+                <div style={{ fontSize: '10px', color: C.muted }}>What changes should I make?</div>
+              </div>
+              <button onClick={() => setRightOpen(false)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: '16px' }}>×</button>
+            </div>
+
+            {/* Messages */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {messages.map(m => (
+                <div key={m.id} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                  <div style={{
+                    maxWidth: '90%', padding: '8px 10px', borderRadius: m.role === 'user' ? '10px 10px 2px 10px' : '10px 10px 10px 2px',
+                    background: m.role === 'user' ? C.accent : C.surface,
+                    border: `1px solid ${m.role === 'user' ? C.accent : C.border}`,
+                    fontSize: '12px', lineHeight: 1.5, color: C.text,
+                  }}>
+                    {m.content}
+                    <div style={{ fontSize: '9px', color: m.role === 'user' ? '#a78bfa' : C.muted, marginTop: '3px', textAlign: 'right' }}>
+                      {m.ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {aiLoading && (
+                <div style={{ display: 'flex', gap: '4px', padding: '8px' }}>
+                  {[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: C.accent, animation: `pulse 1.2s ${i * 0.2}s infinite` }} />)}
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Quick actions */}
+            <div style={{ padding: '8px 12px', borderTop: `1px solid ${C.border}`, display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+              {['Change colors', 'Add animation', 'Adjust timing', 'Write script'].map(q => (
+                <button key={q} onClick={() => { setInput(q); setTimeout(() => inputRef.current?.focus(), 50); }}
+                  style={{ padding: '3px 8px', borderRadius: '12px', border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: '10px', cursor: 'pointer' }}>
+                  {q}
                 </button>
               ))}
+            </div>
+
+            {/* Input */}
+            <div style={{ padding: '8px 12px', borderTop: `1px solid ${C.border}` }}>
+              <div style={{ display: 'flex', gap: '6px', background: C.surface, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '6px 8px', alignItems: 'flex-end' }}>
+                <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                  placeholder="Describe changes..."
+                  style={{ flex: 1, background: 'transparent', border: 'none', color: C.text, fontSize: '12px', resize: 'none', outline: 'none', minHeight: '20px', maxHeight: '80px', lineHeight: 1.4 }}
+                  rows={1} />
+                <button onClick={sendMessage} disabled={aiLoading || !input.trim()}
+                  style={{ background: C.accent, border: 'none', borderRadius: '5px', color: '#fff', width: 26, height: 26, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: input.trim() ? 1 : 0.4 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+                </button>
+              </div>
             </div>
           </aside>
         )}
 
-        {/* Main content */}
-        <main style={s.main}>
-          {tab === 'chat' && (
-            <div style={s.chatWrap}>
-              {/* Chat header */}
-              <div style={s.chatHeader}>
-                <div>
-                  <div style={s.chatTitle}>AI Assistant</div>
-                  <div style={s.chatSub}>Ask me anything about your video project</div>
-                </div>
-                <button style={s.clearBtn} onClick={clearChat}>New chat</button>
-              </div>
-
-              {/* Messages */}
-              <div style={s.messages}>
-                {messages.map(m => (
-                  <div key={m.id} style={{...s.msgRow, justifyContent: m.role==='user' ? 'flex-end' : 'flex-start'}}>
-                    {m.role === 'assistant' && (
-                      <div style={s.aiBadge}>
-                        <svg width="14" height="14" viewBox="0 0 36 36" fill="none">
-                          <path d="M10 13l6 10 6-10" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                          <path d="M14 13h8" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round"/>
-                        </svg>
-                      </div>
-                    )}
-                    <div style={{
-                      ...s.bubble,
-                      ...(m.role==='user' ? s.bubbleUser : s.bubbleAI),
-                    }}>
-                      {m.content.split('\n').map((line, i) => (
-                        <span key={i}>{line}{i < m.content.split('\n').length - 1 && <br/>}</span>
-                      ))}
-                      <div style={s.ts}>{m.ts.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
-                    </div>
-                  </div>
-                ))}
-                {loading && (
-                  <div style={{...s.msgRow, justifyContent:'flex-start'}}>
-                    <div style={s.aiBadge}>
-                      <svg width="14" height="14" viewBox="0 0 36 36" fill="none">
-                        <path d="M10 13l6 10 6-10" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M14 13h8" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round"/>
-                      </svg>
-                    </div>
-                    <div style={{...s.bubble, ...s.bubbleAI}}>
-                      <div style={s.typing}>
-                        <span style={{...s.dot, animationDelay:'0ms'}}/>
-                        <span style={{...s.dot, animationDelay:'160ms'}}/>
-                        <span style={{...s.dot, animationDelay:'320ms'}}/>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <div ref={bottomRef}/>
-              </div>
-
-              {/* Input */}
-              <div style={s.inputRow}>
-                <textarea
-                  ref={inputRef}
-                  style={s.input}
-                  placeholder="Ask me to create a video, suggest animations, write a script..."
-                  value={input}
-                  onChange={e => setInput(e.target.value)}
-                  onKeyDown={handleKey}
-                  rows={1}
-                  disabled={loading}
-                />
-                <button style={{...s.sendBtn, opacity: (!input.trim() || loading) ? 0.4 : 1}}
-                  onClick={sendMessage} disabled={!input.trim() || loading}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-                  </svg>
-                </button>
-              </div>
-              <style>{`
-                @keyframes bounce {0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
-                @keyframes spin{to{transform:rotate(360deg)}}
-              `}</style>
-            </div>
-          )}
-
-          {tab === 'projects' && (
-            <div style={s.tabContent}>
-              <h2 style={s.tabTitle}>Your Projects</h2>
-              <div style={s.emptyState}>
-                <div style={s.emptyIcon}>🎬</div>
-                <p style={s.emptyText}>No projects yet</p>
-                <p style={s.emptySub}>Ask the AI assistant to create your first video</p>
-                <button style={s.ctaBtn} onClick={() => setTab('chat')}>Open AI Chat →</button>
-              </div>
-            </div>
-          )}
-
-          {tab === 'templates' && (
-            <div style={s.tabContent}>
-              <h2 style={s.tabTitle}>Templates</h2>
-              <div style={s.templateGrid}>
-                {TEMPLATES.map(t => (
-                  <div key={t.name} style={s.templateCard} onClick={() => { setInput(`Create a ${t.name} video for me`); setTab('chat'); }}>
-                    <div style={{...s.templateThumb, background: t.color}}>
-                      <span style={s.templateEmoji}>{t.emoji}</span>
-                    </div>
-                    <div style={s.templateBody}>
-                      <div style={s.templateName}>{t.name}</div>
-                      <div style={s.templateMeta}>{t.desc}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </main>
+        {/* Toggle AI panel */}
+        {!rightOpen && (
+          <button onClick={() => setRightOpen(true)}
+            style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', background: C.accent, border: 'none', borderRadius: '6px 0 0 6px', color: '#fff', padding: '10px 6px', cursor: 'pointer', fontSize: '12px', zIndex: 10 }}>
+            AI
+          </button>
+        )}
       </div>
+
+      <style>{`
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 2px; }
+        @keyframes pulse { 0%,100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
+      `}</style>
     </div>
   );
 }
-
-const QUICK_ACTIONS = [
-  { emoji:'📈', label:'Trade Signal Video', prompt:'Create a BUY trade signal video for BTC at $84,000. Reason: breaking key resistance with strong volume.' },
-  { emoji:'✨', label:'Brand Intro', prompt:'Design a 5-second Nexus Investment Group brand intro with gold and purple colors.' },
-  { emoji:'📊', label:'Portfolio Update', prompt:'Create a 15-second portfolio performance video showing 12% gains this week.' },
-  { emoji:'🎯', label:'YouTube Thumbnail', prompt:'Help me design a YouTube thumbnail for a video called "I Let AI Trade Crypto For Me".' },
-];
-
-const TEMPLATES = [
-  { name:'Trade Signal Alert', emoji:'📈', desc:'15s · Finance', color:'linear-gradient(135deg,#0f2027,#2c5364)' },
-  { name:'Brand Intro', emoji:'✨', desc:'5s · Branding', color:'linear-gradient(135deg,#1a0533,#3b0764)' },
-  { name:'Social Clip', emoji:'🎬', desc:'30s · Social', color:'linear-gradient(135deg,#0d1117,#161b22)' },
-  { name:'Portfolio Review', emoji:'💼', desc:'60s · Finance', color:'linear-gradient(135deg,#0a1628,#0d2444)' },
-  { name:'YouTube Intro', emoji:'🎯', desc:'10s · YouTube', color:'linear-gradient(135deg,#1a0000,#3d0000)' },
-];
-
-const s: Record<string, React.CSSProperties> = {
-  root: { height:'100vh', display:'flex', flexDirection:'column', background:'#0a0a0f', overflow:'hidden' },
-  nav: { display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 20px',
-    height:56, background:'#0d0d14', borderBottom:'1px solid #1a1a2e', flexShrink:0, zIndex:10 },
-  navLeft: { display:'flex', alignItems:'center', gap:12, minWidth:200 },
-  menuBtn: { background:'none', border:'none', color:'#6b7280', cursor:'pointer', padding:6, borderRadius:6, display:'flex' },
-  brand: { display:'flex', alignItems:'center', gap:8 },
-  brandName: { fontSize:16, fontWeight:700, color:'#a78bfa' },
-  navTabs: { display:'flex', gap:4 },
-  navTab: { padding:'6px 16px', background:'none', border:'none', color:'#6b7280',
-    fontSize:13, fontWeight:500, cursor:'pointer', borderRadius:6, transition:'all 0.15s' },
-  navTabActive: { background:'#1a1a2e', color:'#a78bfa' },
-  navRight: { display:'flex', alignItems:'center', gap:10, minWidth:200, justifyContent:'flex-end' },
-  avatar: { width:28, height:28, borderRadius:'50%', border:'2px solid #4c1d95' },
-  userName: { fontSize:13, color:'#6b7280', maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' },
-  signOutBtn: { padding:'5px 12px', background:'transparent', color:'#4b5563',
-    border:'1px solid #1f2937', borderRadius:6, cursor:'pointer', fontSize:12 },
-  body: { display:'flex', flex:1, overflow:'hidden' },
-  sidebar: { width:220, background:'#0d0d14', borderRight:'1px solid #1a1a2e',
-    display:'flex', flexDirection:'column', overflow:'auto', flexShrink:0 },
-  sidebarSection: { padding:'16px 12px 8px' },
-  sidebarLabel: { fontSize:10, fontWeight:700, color:'#374151', letterSpacing:1.5, marginBottom:8, padding:'0 8px' },
-  quickBtn: { display:'flex', alignItems:'center', gap:10, width:'100%', padding:'9px 10px',
-    background:'none', border:'none', color:'#9ca3af', cursor:'pointer', borderRadius:8,
-    fontSize:13, textAlign:'left', transition:'all 0.15s' },
-  quickEmoji: { fontSize:16, flexShrink:0 },
-  quickLabel: { fontSize:13, lineHeight:1.2 },
-  main: { flex:1, display:'flex', flexDirection:'column', overflow:'hidden' },
-  chatWrap: { flex:1, display:'flex', flexDirection:'column', height:'100%' },
-  chatHeader: { display:'flex', alignItems:'center', justifyContent:'space-between',
-    padding:'16px 24px', borderBottom:'1px solid #1a1a2e', flexShrink:0 },
-  chatTitle: { fontSize:16, fontWeight:700, color:'#f9fafb' },
-  chatSub: { fontSize:12, color:'#4b5563', marginTop:2 },
-  clearBtn: { padding:'6px 14px', background:'transparent', color:'#6b7280',
-    border:'1px solid #1f2937', borderRadius:6, cursor:'pointer', fontSize:12 },
-  messages: { flex:1, overflow:'auto', padding:'20px 24px', display:'flex', flexDirection:'column', gap:16 },
-  msgRow: { display:'flex', alignItems:'flex-end', gap:8 },
-  aiBadge: { width:28, height:28, background:'#1a1a2e', borderRadius:'50%',
-    display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 },
-  bubble: { maxWidth:'72%', padding:'12px 16px', borderRadius:16, fontSize:14, lineHeight:1.6,
-    position:'relative', wordBreak:'break-word' },
-  bubbleAI: { background:'#111827', color:'#e5e7eb', borderBottomLeftRadius:4,
-    border:'1px solid #1f2937' },
-  bubbleUser: { background:'#4c1d95', color:'#fff', borderBottomRightRadius:4 },
-  ts: { fontSize:10, color:'#4b5563', marginTop:6, textAlign:'right' },
-  typing: { display:'flex', gap:4, alignItems:'center', height:20 },
-  dot: { width:6, height:6, background:'#6b7280', borderRadius:'50%',
-    animation:'bounce 1.2s infinite', display:'inline-block' },
-  inputRow: { display:'flex', alignItems:'flex-end', gap:8, padding:'12px 24px 20px',
-    borderTop:'1px solid #1a1a2e', flexShrink:0 },
-  input: { flex:1, background:'#111827', border:'1px solid #1f2937', borderRadius:12,
-    color:'#f9fafb', fontSize:14, padding:'12px 16px', resize:'none', outline:'none',
-    fontFamily:'inherit', lineHeight:1.5, maxHeight:120, overflow:'auto' },
-  sendBtn: { width:44, height:44, background:'#7c3aed', border:'none', borderRadius:10,
-    color:'#fff', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center',
-    flexShrink:0, transition:'opacity 0.15s' },
-  tabContent: { flex:1, padding:'32px 32px', overflow:'auto' },
-  tabTitle: { fontSize:22, fontWeight:700, color:'#f9fafb', marginBottom:24 },
-  emptyState: { display:'flex', flexDirection:'column', alignItems:'center',
-    justifyContent:'center', height:360, gap:12 },
-  emptyIcon: { fontSize:48, marginBottom:8 },
-  emptyText: { fontSize:18, fontWeight:600, color:'#f9fafb' },
-  emptySub: { fontSize:14, color:'#6b7280' },
-  ctaBtn: { marginTop:8, padding:'12px 24px', background:'#7c3aed', color:'#fff',
-    border:'none', borderRadius:10, fontSize:14, fontWeight:600, cursor:'pointer' },
-  templateGrid: { display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))', gap:16 },
-  templateCard: { background:'#111827', borderRadius:12, overflow:'hidden',
-    border:'1px solid #1f2937', cursor:'pointer' },
-  templateThumb: { height:110, display:'flex', alignItems:'center', justifyContent:'center' },
-  templateEmoji: { fontSize:36 },
-  templateBody: { padding:'14px 16px' },
-  templateName: { fontSize:14, fontWeight:600, color:'#f9fafb', marginBottom:4 },
-  templateMeta: { fontSize:12, color:'#6b7280' },
-};
