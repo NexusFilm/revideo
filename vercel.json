@@ -1,10 +1,9 @@
 {
   "version": 2,
-  "framework": null,
-  "buildCommand": "npm install --prefix packages/nexus-signals && npm run build --prefix packages/nexus-signals && mkdir -p packages/nexus-signals/dist/auth/callback && cp packages/ui/auth/callback/index.html packages/nexus-signals/dist/auth/callback/index.html",
-  "outputDirectory": "packages/nexus-signals/dist",
+  "framework": "vite",
+  "buildCommand": "npm install --prefix apps/nexia-motion && npm run build --prefix apps/nexia-motion",
+  "outputDirectory": "apps/nexia-motion/dist",
   "rewrites": [
-    { "source": "/auth/callback", "destination": "/auth/callback/index.html" },
-    { "source": "/((?!auth).*)", "destination": "/index.html" }
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
