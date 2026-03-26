@@ -1,6 +1,8 @@
 {
   "version": 2,
   "framework": null,
+  "buildCommand": "npm install --prefix packages/nexus-signals && npm run build --prefix packages/nexus-signals",
+  "outputDirectory": "packages/nexus-signals/dist",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
