@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable @typescript-eslint/naming-convention */
 'use client';
 
 import { Player } from '@revideo/player-react';
@@ -196,7 +198,7 @@ export default function Home() {
   );
 }
 
-function AiPanel({ vars, onUpdateVar }: { vars: any; onUpdateVar: (k: string, v: string) => void }) {
+function AiPanel({ vars, onUpdateVar: _onUpdateVar }: { vars: any; onUpdateVar: (k: string, v: string) => void }) {
   const [messages, setMessages] = useState([
     { role: 'assistant', content: "I'm your Nexia Motion AI. I can suggest trade signal content, adjust copy, or help you craft the perfect video. What would you like to change?" }
   ]);
