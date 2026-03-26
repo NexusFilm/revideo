@@ -8,11 +8,11 @@
     "render": "revideo render src/projects/trade-signal.ts"
   },
   "dependencies": {
-    "@revideo/2d": "workspace:*",
-    "@revideo/core": "workspace:*"
+    "@revideo/2d": "^0.10.4",
+    "@revideo/core": "^0.10.4"
   },
   "devDependencies": {
-    "@revideo/vite-plugin": "workspace:*",
+    "@revideo/vite-plugin": "^0.10.4",
     "typescript": "^5.0.0",
     "vite": "^5.0.0"
   }
