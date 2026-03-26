@@ -64,28 +64,20 @@ export default function Dashboard({ session }: Props) {
         content: m.content,
       }));
 
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await fetch('https://dede-68e21946.base44.app/functions/nexiaAI', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
-          max_tokens: 600,
-          temperature: 0.7,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history }),
       });
 
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       const data = await res.json();
-      const reply = data.choices?.[0]?.message?.content || 'Sorry, I had trouble with that. Try again.';
+      const reply = data.reply || 'Sorry, I had trouble with that. Try again.';
       setMessages(prev => [...prev, { id: Date.now() + 1, role: 'assistant', content: reply, ts: new Date() }]);
     } catch (err) {
       setMessages(prev => [...prev, {
         id: Date.now() + 1, role: 'assistant',
-        content: "I'm having trouble connecting right now. Check your API key in Vercel env vars (VITE_OPENAI_API_KEY) and redeploy.",
+        content: "I'm having trouble connecting right now. Please try again in a moment.",
         ts: new Date(),
       }]);
     } finally {
